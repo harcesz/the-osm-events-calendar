@@ -1,10 +1,10 @@
 <?php
 /**
- * Facilitates embedding one or more maps utilizing the Google Maps API.
+ * Facilitates embedding one or more maps utilizing OpenStreetMap.
  */
 class Tribe__Events__Embedded_Maps {
 	/**
-	 * Script handle for the embedded maps script.
+	 * Script handle (not needed for OSM iframe, kept for compatibility).
 	 */
 	const MAP_HANDLE = 'tribe_events_embedded_map';
 
@@ -35,20 +35,18 @@ class Tribe__Events__Embedded_Maps {
 	protected $address = '';
 
 	/**
-	 * Container for map address data (potentially allowing for multiple maps
-	 * per page).
+	 * Container for map address data (potentially allowing for multiple maps per page).
 	 *
 	 * @var array
 	 */
 	protected $embedded_maps = [];
 
 	/**
-	 * Indicates if the Google Maps API script has been enqueued.
+	 * Indicates if the map script has been enqueued (not needed for OSM iframe).
 	 *
 	 * @var bool
 	 */
 	protected $map_script_enqueued = false;
-
 
 	/**
 	 * @return Tribe__Events__Embedded_Maps
@@ -62,8 +60,7 @@ class Tribe__Events__Embedded_Maps {
 	}
 
 	/**
-	 * Returns the placeholder HTML needed to embed a map within a page and
-	 * additionally enqueues supporting scripts, etc.
+	 * Returns the placeholder HTML needed to embed a map within a page.
 	 *
 	 * @param int  $post_id ID of the pertinent event or venue
 	 * @param int  $width
@@ -96,51 +93,60 @@ class Tribe__Events__Embedded_Maps {
 
 		ob_start();
 
+		// Calculate width and height
 		if ( is_numeric( $width ) ) {
 			$width .= 'px';
 		}
-
 		if ( is_numeric( $height ) ) {
 			$height .= 'px';
 		}
+		$width  = $width  ? $width  : apply_filters( 'tribe_events_single_map_default_width', '100%' );
+		$height = $height ? $height : apply_filters( 'tribe_events_single_map_default_height', '350px' );
 
-		if ( tribe_is_using_basic_gmaps_api() ) {
+		// Try to get coordinates, fallback to address if not possible
+		$lat = $lng = null;
+		$address = trim($this->address);
 
-			// Get a basic embed that doesn't use the JavaScript API
-			tribe_get_template_part(
-				'modules/map-basic',
-				null,
-				[
-					'venue'     => esc_html( get_the_title( $this->venue_id ) ),
-					'embed_url' => tribe_get_basic_gmap_embed_url( $this->address ),
-					'address'   => $this->address,
-					'index'     => $index,
-					'width'     => null === $width ? apply_filters( 'tribe_events_single_map_default_width', '100%' ) : $width,
-					'height'    => null === $height ? apply_filters( 'tribe_events_single_map_default_height', '350px' ) : $height,
-				]
-			);
-
-		} else {
-		 	// Generate the HTML used to "house" the JavaScript API-enabled map
-			tribe_get_template_part(
-				'modules/map',
-				null,
-				[
-					'index' => $index,
-					'width' => null === $width ? apply_filters( 'tribe_events_single_map_default_width', '100%' ) : $width,
-					'height' => null === $height ? apply_filters( 'tribe_events_single_map_default_height', '350px' ) : $height,
-				]
-			);
+		// If using PRO Geo_Loc, try to get lat/lng
+		if ( class_exists( 'Tribe__Events__Pro__Geo_Loc' ) ) {
+			$lat = get_post_meta( $this->venue_id, Tribe__Events__Pro__Geo_Loc::LAT, true );
+			$lng = get_post_meta( $this->venue_id, Tribe__Events__Pro__Geo_Loc::LNG, true );
+			if ( !empty($lat) && !empty($lng) ) {
+				$address = "$lat,$lng";
+			}
 		}
 
-		$this->setup_scripts();
+		// If we have lat/lng, use them for OSM marker, otherwise attempt geocoding (not implemented here)
+		if ( preg_match( '/^(-?\d+\.\d+),\s*(-?\d+\.\d+)$/', $address, $matches ) ) {
+			$lat = $matches[1];
+			$lng = $matches[2];
+		} else {
+			// Fallback: no coordinates, display address text only, or optionally use a static map service with geocoding
+			$lat = $lng = null;
+		}
+
+		if ( $lat && $lng ) {
+			// OSM embed with marker at the coordinates
+			$zoom = apply_filters( 'tribe_events_single_map_zoom_level', 15 );
+			$osm_url = "https://www.openstreetmap.org/export/embed.html?bbox=" .
+				($lng-0.005) . "%2C" . ($lat-0.003) . "%2C" . ($lng+0.005) . "%2C" . ($lat+0.003) .
+				"&layer=mapnik&marker={$lat},{$lng}";
+			echo '<div class="tribe-events-osm-map" style="width:'.esc_attr($width).'; height:'.esc_attr($height).';">';
+			echo '<iframe width="100%" height="100%" frameborder="0" scrolling="no" marginheight="0" marginwidth="0" src="' . esc_url($osm_url) . '" style="border:1px solid #ccc"></iframe>';
+			echo '</div>';
+		} elseif ( !empty($address) ) {
+			// No coordinates, just display the address (optionally, you could integrate a geocoding API here)
+			echo '<div class="tribe-events-osm-address" style="width:'.esc_attr($width).'; height:'.esc_attr($height).'; display:flex; align-items:center; justify-content:center; border:1px solid #ccc;">';
+			echo esc_html( $address );
+			echo '</div>';
+		}
 
 		do_action( 'tribe_events_map_embedded', $index, $this->venue_id );
 		return apply_filters( 'tribe_get_embedded_map', ob_get_clean() );
 	}
 
 	protected function get_ids( $post_id ) {
-		$post_id = $post_id = Tribe__Events__Main::postIdHelper( $post_id );
+		$post_id = Tribe__Events__Main::postIdHelper( $post_id );
 		$this->event_id = tribe_is_event( $post_id ) ? $post_id : 0;
 		$this->venue_id = tribe_is_venue( $post_id ) ? $post_id : tribe_get_venue_id( $post_id );
 	}
@@ -157,7 +163,7 @@ class Tribe__Events__Embedded_Maps {
 			}
 		}
 
-		if ( class_exists( 'Tribe__Events__Pro__Geo_Loc' ) && empty( $this->address ) ) {
+		if ( class_exists( 'Tribe__Events__Pro__Geo_Loc' ) && empty( trim($this->address) ) ) {
 			$overwrite = (int) get_post_meta( $this->venue_id, Tribe__Events__Pro__Geo_Loc::OVERWRITE, true );
 			if ( $overwrite ) {
 				$lat = get_post_meta( $this->venue_id, Tribe__Events__Pro__Geo_Loc::LAT, true );
@@ -173,41 +179,9 @@ class Tribe__Events__Embedded_Maps {
 
 	public function update_map_data( $map_index, array $data ) {
 		$this->embedded_maps[ $map_index ] = $data;
-		$this->setup_scripts();
 	}
 
-	protected function setup_scripts() {
-		if ( ! $this->map_script_enqueued ) {
-			$this->enqueue_map_scripts();
-		}
-
-		// Provide address data
-		wp_localize_script(
-			self::MAP_HANDLE,
-			'tribeEventsSingleMap',
-			[
-				'addresses' => $this->embedded_maps,
-				'zoom'      => apply_filters(
-					'tribe_events_single_map_zoom_level',
-					(int) tribe_get_option( 'embedGoogleMapsZoom', 8 )
-				),
-				'pin_url'   => tribe( 'customizer' )->get_option( [ 'global_elements', 'map_pin' ], false ),
-			]
-		);
-	}
-
-	protected function enqueue_map_scripts() {
-
-		$api_key = tribe_get_option( 'google_maps_js_api_key', Tribe__Events__Google__Maps_API_Key::$default_api_key );
-
-		// bail if we don't have an API key
-		if ( empty( $api_key ) ) {
-			return;
-		}
-
-		tribe_asset_enqueue( 'tribe_events_google_maps_api' );
-		tribe_asset_enqueue(  self::MAP_HANDLE );
-
-		$this->map_script_enqueued = true;
-	}
+	// No scripts needed for OSM iframe, so these are now empty for compatibility
+	protected function setup_scripts() {}
+	protected function enqueue_map_scripts() {}
 }
